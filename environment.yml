@@ -1,0 +1,11 @@
+name: ecis
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - scikit-learn=1.3.0
+  - biopython=1.81
+  - numpy=1.25.0
+  - pyrodigal=2.1.0
