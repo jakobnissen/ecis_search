@@ -152,7 +152,7 @@ minimum_toxin_length::Int = typemax(Int)
 toxin_proteins = Dict{String, LongAA}()
 for record in open(collect, FASTAReader, "choices/query_toxins.faa")
     KIND_DICT[identifier(record)] = toxin
-    minimum_toxin_length = min(minimum_toxin_length, seqsize(record))
+    global minimum_toxin_length = min(minimum_toxin_length, seqsize(record))
     toxin_proteins[identifier(record)] = FASTX.sequence(LongAA, record)
 end
 
@@ -173,11 +173,6 @@ afp_blasts = filter_hits(afp_blasts, 0.25, 0.5)
 toxin_blasts = open(read_blast, "tmp/tblastn_toxins.tsv")
 append!(toxin_blasts, open(read_blast, "tmp/tblastn_env_toxins.tsv"))
 toxin_blasts = filter_hits(toxin_blasts, 0.25, 0.5)
-
-#filter!(toxin_blasts) do hit
-    # Must include the signal peptide
-#    min(hit.qstart, hit.qend) < 11
-#end
 
 blasts = vcat(afp_blasts, toxin_blasts)
 
@@ -209,13 +204,13 @@ class_positions = let
 end
 
 merged_positions = let
-    map(collect(class_positions)) do (k, d)
+    map(collect(class_positions)) do (source, d)
         intervals = collect(values(d))
         result = first(intervals)
         for i in intervals
             result = intersect(result, i)
         end
-        (k, result)
+        (source, result)
     end
 end |> Dict
 filter!(merged_positions) do (k, v)
@@ -229,62 +224,89 @@ toxins_inside_intersections = filter(toxin_blasts) do hit
     (a ∈ intervalset) && (b ∈ intervalset)
 end
 
-# I downloaded the 32 unique genomes that contain a toxin
-# to raw/toxin_hosts.fna
+# I downloaded the unique genomes that contain a toxin from NCBI
+# to tmp/toxin_hosts.fna
 
 # Run find_genes.py to find genes
-
+if !isfile("tmp/predicted_genes.fna")
+    error("You must run `src/find_genes.py` to create tmp/predicted_genes.fna")
+end
 # Format:
 # >MT039196.1_23 # 19747 # 19896 # 1 # ID=1_23;partial=00;start_type=ATG;rbs_motif=GGAG/GAGG;rbs_spacer=5-10bp;gc_cont=0.493
 
-sequence_of_genome = open(FASTAReader, "raw/toxin_hosts.fna") do reader
+
+sequence_of_genome = open(FASTAReader, "tmp/toxin_hosts.fna") do reader
     map(reader) do record
         (identifier(record) => FASTX.sequence(LongDNA{4}, record))
     end |> Dict
 end
 
 predicted_genes = let
-    result = Dict{String, Vector{UnitRange}}()
+    # Identifier, [(span, is_reverse_complement)...]
+    result = Dict{String, Vector{Tuple{UnitRange, Bool}}}()
     header_regex = r"^([A-Z0-9\.])+_\d+"
     open(FASTAReader, "tmp/predicted_genes.fna") do reader
         for record in reader
-            seqsize(record) < 0.8 * minimum_toxin_length && continue
+            # No genes too small to possibly be a toxin
+            seqsize(record) < 0.75 * minimum_toxin_length && continue
             fields = split(description(record), " # ")
+            # No partial genes
             occursin(r"partial=00", fields[5]) || continue
             identifier = first(split(first(fields), '_'))
             (start, stop) = (parse(Int, fields[2]), parse(Int, fields[3]))
             @assert start < stop
-            range = if fields[4] == "1"
-                start:stop
+            element = if fields[4] == "1"
+                (start:stop, false)
             else
+                # If reverse-complement, we get the opposite strand
                 @assert fields[4] == "-1"
                 len = length(sequence_of_genome[identifier])
-                (len - start + 1):(len - stop + 1)
+                ((len - start + 1):(len - stop + 1), true)
             end
-            push!(get!(valtype(result), result, identifier), range)
+            push!(get!(valtype(result), result, identifier), element)
         end
     end
-    foreach(i -> sort!(unique!(i); by=first), values(result))
+    foreach(i -> sort!(unique!(i); by=i -> first(first(i))), values(result))
     result
 end
 
 potential_toxins = let
-    # Toxin => {Source => Location}
-    result = Dict{String, Dict{String, Vector{UnitRange{Int}}}}()
+    # Toxin => {Source => (Location, is_reverse_complement)}
+    result = Dict{String, Dict{String, Vector{Tuple{UnitRange{Int}, Bool}}}}()
     for hit in toxins_inside_intersections
         toxin = hit.qacc
         source = hit.sacc
         from_to = UnitRange(minmax(hit.sstart, hit.send)...)
-        middle_pos = (first(from_to) + last(from_to)) ÷ 2
-        i = searchsortedlast(predicted_genes[source], middle_pos; by=first)
-        iszero(i) && continue
-        gene_range = predicted_genes[source][i]
-        if length(intersect(gene_range, from_to)) < 0.5 * min(length(gene_range), length(from_to))
-            continue
+        is_rc = hit.sstart == last(from_to)
+
+        # Either the hit begins at the toxin start and so includes the signal
+        # peptide, or else we use the predicted genes to find the true toxin 
+        # start
+        if min(hit.qstart, hit.qend) > 1
+            middle_pos = (first(from_to) + last(from_to)) ÷ 2
+            i = searchsortedlast(predicted_genes[source], middle_pos; by=i -> first(first(i)))
+            if iszero(i)
+                continue
+            end
+            (gene_range, is_rc_hit) = predicted_genes[source][i]
+            is_rc == is_rc_hit || continue
+            if last(gene_range) < first(from_to)
+                # println(predicted_genes[source][i-2:i+2])
+                # println(from_to)
+                # println(is_rc)
+            end
+            if length(intersect(gene_range, from_to)) < 0.5 * min(length(gene_range), length(from_to))
+                # println(hit)
+                # println(gene_range)
+                # println(from_to)
+                # println()
+                continue
+            end
+        else
+            gene_range = from_to
         end
-        middle_pos ∈ gene_range || continue
         d = get!(valtype(result), result, toxin)
-        push!(get!(valtype(d), d, source), gene_range)
+        push!(get!(valtype(d), d, source), (gene_range, is_rc))
     end
     result
 end
@@ -296,16 +318,24 @@ check = []
 dbg = Ref{Any}(nothing)
 for (toxin, d) in potential_toxins
     for (source, ranges) in d
-        for range in ranges
+        for (range, is_rc) in ranges
             dna = sequence_of_genome[source][range]
-            aa_toxin = toxin_proteins[toxin]
-            for f in (reverse_complement, identity)
-                aa = translate(f(dna))
-                aas = collect(pairalign(GlobalAlignment(), aa, aa_toxin, MODEL).aln)
-                id = sum(i == j for (i,j) in aas) / length(aas)
-                id < 0.25 && continue
-                push!(check, (toxin, source, range, id))
+            if is_rc
+                dna = reverse_complement(dna)
             end
+            aa_toxin = toxin_proteins[toxin]
+            aa = translate(dna)
+            if last(aa) == AA_Term
+                aa = aa[1:end-1]
+                range = first(range):last(range)-3
+            end
+            if length(findall(AA_Term, aa)) > 0
+                error()
+            end
+            aas = collect(pairalign(GlobalAlignment(), aa, aa_toxin, MODEL).aln)
+            id = sum(i == j for (i,j) in aas) / length(aas)
+            id < 0.25 && continue
+            push!(check, (toxin, source, range, id, is_rc))
         end
     end
 end
@@ -313,9 +343,18 @@ end
 # Dump to file
 open(FASTAWriter, "tmp/possible_toxins.fna") do fna
     open(FASTAWriter, "tmp/possible_toxins.faa") do faa
-        for (toxin, source, span, id) in check
+        for (toxin, source, span, id, is_rc) in check
             dna = sequence_of_genome[source][span]
+            if is_rc
+                dna = reverse_complement(dna)
+            end
             aa = translate(dna)
+            if last(aa) == AA_Term
+                aa = aa[1:end-1]
+            end
+            if length(findall(AA_Term, aa)) > 0
+                error()
+            end
             id = "$(toxin)_$(source)_$(span)_id=$(round(100*id; digits=1))"
             write(fna, FASTARecord(id, dna))
             write(faa, FASTARecord(id, aa))

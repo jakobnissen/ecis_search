@@ -25,6 +25,6 @@ Date of creation: 2022-10-19
 ## Reproducibility
 Hardware: Intel i7-1185G7
 OS: Linux 6.2.16-2 Manjaro
-
 Julia 1.9.1
-Python 3.10.12
+
+To run: Check `src/order.md`, run each of those files in order.

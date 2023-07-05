@@ -1,12 +1,14 @@
 # Load data
+#%% Random model
+import os
 from Bio import SeqIO
 import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.dummy import DummyClassifier
 from sklearn.model_selection import ShuffleSplit
 
-#import os
-#os.chdir("..")
+if os.getcwd()[-3:] == "src":
+    os.chdir("..")
 
 splitter = ShuffleSplit(n_splits=3, test_size=0.33)
 
@@ -148,8 +150,9 @@ print(sum(acc_logisitic_2) / len(acc_logisitic_2))
 # %%
 
 # Optimal given acc_logistic_2
-# Optimal2 MPYYSNSKEKETHSKKNERD
-#          ||| | |||||||||  |||
+#          
+# Optimal2 MPYSSNSKKNETHSKKNERD
+#          ||||| ||  |||||  |||
 # AfpN18   MPYSSESKEKETHSKETERD
 
 x = model.coef_.copy().reshape((20, -1))
@@ -159,4 +162,4 @@ for i in x:
 
 print("".join([INDEX_TO_AA[np.argmax(i)] for i in x]))
 
-# %%
+x# %%

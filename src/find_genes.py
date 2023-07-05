@@ -1,12 +1,13 @@
 import Bio.SeqIO
 import pyrodigal
+import os
 
-#import os
-#os.chdir("..")
+if os.getcwd()[-3:] == "src":
+    os.chdir("..")
 
-records = list(Bio.SeqIO.parse("raw/toxin_hosts.fna", "fasta"))
+records = list(Bio.SeqIO.parse("tmp/toxin_hosts.fna", "fasta"))
 
-with open("/tmp/foo.fna", "w") as file:
+with open("tmp/predicted_genes.fna", "w") as file:
     for record in records:
         orf_finder = pyrodigal.OrfFinder()
         orf_finder.train(bytes(record.seq))
